@@ -1,0 +1,7 @@
+# build output (the published single-file page)
+dist/
+# editor and OS clutter
+.DS_Store
+Thumbs.db
+*.log
+node_modules/
