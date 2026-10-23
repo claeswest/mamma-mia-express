@@ -1,5 +1,7 @@
 # build output (the published single-file page)
 dist/
+# test screenshots from serve.js
+shots/
 # editor and OS clutter
 .DS_Store
 Thumbs.db

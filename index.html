@@ -990,10 +990,13 @@ function occlusionCut(sh){
     if (uOccOn > 0.5) {
       vec3 ab = uOccB - uOccA; float t = clamp(dot(vOccW - uOccA, ab) / dot(ab, ab), 0.0, 1.0);
       float d = length(vOccW - (uOccA + ab*t));
-      if (t > 0.02 && t < 0.9 && d < uOccR) {
-        float k = smoothstep(uOccR, uOccR*0.5, d);
-        float dith = fract(sin(dot(floor(gl_FragCoord.xy), vec2(12.9898, 78.233))) * 43758.5453);
-        if (dith < k*0.92) discard;
+      if (length(vOccW - uOccA) < 7.0) discard;                       // nothing right in front of the lens
+      float r = uOccR * mix(1.6, 0.8, t);                              // a wider opening near the camera
+      if (t > 0.02 && t < 0.9 && d < r) {
+        float k = smoothstep(r, r*0.78, d);                            // fully clear in the middle, soft edge
+        vec2 bq = mod(floor(gl_FragCoord.xy), 4.0), b1 = mod(bq, 2.0), b2 = floor(bq/2.0);
+        float dith = (4.0*mod(2.0*b1.x + 3.0*b1.y, 4.0) + mod(2.0*b2.x + 3.0*b2.y, 4.0) + 0.5) / 16.0;
+        if (dith < k) discard;
       }
     }`);
 }
@@ -1072,7 +1075,9 @@ roofTex.repeat.set(2, 2);
 const stripeTex = canvasTex(32, 32, (g) => { g.fillStyle = '#fff'; g.fillRect(0,0,32,32); g.fillStyle = '#1d2b4f'; for (let y = 0; y < 32; y += 8) g.fillRect(0, y, 32, 4); });
 stripeTex.repeat.set(1, 2);
 function poleTex(col){ const t = canvasTex(64, 64, (g) => { g.fillStyle = '#fff'; g.fillRect(0,0,64,64); g.fillStyle = col; for (let k = -64; k < 128; k += 32) { g.beginPath(); g.moveTo(k,0); g.lineTo(k+16,0); g.lineTo(k+16+64,64); g.lineTo(k+64,64); g.fill(); } }); t.repeat.set(1, 3); return t; }
-const beamTex = canvasTex(4, 128, (g) => { const gr = g.createLinearGradient(0, 0, 0, 128); gr.addColorStop(0, 'rgba(255,220,120,0)'); gr.addColorStop(1, 'rgba(255,220,120,1)'); g.fillStyle = gr; g.fillRect(0, 0, 4, 128); });
+const beamTex = canvasTex(4, 128, (g) => { const gr = g.createLinearGradient(0, 0, 0, 128); gr.addColorStop(0, 'rgba(255,214,140,0)'); gr.addColorStop(.55, 'rgba(255,214,140,.35)'); gr.addColorStop(.9, 'rgba(255,214,140,1)'); gr.addColorStop(1, 'rgba(255,214,140,0)'); g.fillStyle = gr; g.fillRect(0, 0, 4, 128); });
+// a soft round glow for the water at the finish
+const finishGlowTex = canvasTex(128, 128, (g) => { const gr = g.createRadialGradient(64, 64, 0, 64, 64, 64); gr.addColorStop(0, 'rgba(255,224,150,.55)'); gr.addColorStop(.55, 'rgba(255,214,130,.22)'); gr.addColorStop(.8, 'rgba(255,214,130,.38)'); gr.addColorStop(1, 'rgba(255,214,130,0)'); g.fillStyle = gr; g.fillRect(0, 0, 128, 128); });
 beamTex.wrapS = beamTex.wrapT = THREE.ClampToEdgeWrapping;
 
 function roundRect(g, x, y, w, h, r){ g.beginPath(); g.moveTo(x+r, y); g.arcTo(x+w, y, x+w, y+h, r); g.arcTo(x+w, y+h, x, y+h, r); g.arcTo(x, y+h, x, y, r); g.arcTo(x, y, x+w, y, r); g.closePath(); }
@@ -1287,7 +1292,7 @@ function makeGondola(cust, look){
       const smile = new THREE.Mesh(FACE.smile, FACE.mouth), frown = new THREE.Mesh(FACE.frown, FACE.mouth);
       smile.position.set(.155, -.075, 0); frown.position.set(.158, -.095, 0); smile.scale.setScalar(.68); frown.scale.setScalar(.68); head.add(smile, frown);
       // hair
-      if (cust.scarf) { const sc2 = mesh(Q.scarf, hairM, -.02, .015, 0); sc2.scale.set(1.08, 1.2, 1.04); head.add(sc2); head.add(mesh(Q.knot, hairM, .05, -.2, 0)); }
+      if (cust.scarf) { const sc2 = mesh(Q.scarf, hairM, -.075, .02, 0); sc2.scale.set(.78, 1.18, 1.06); /* pushed back so her face shows */ head.add(sc2); head.add(mesh(Q.knot, hairM, .05, -.2, 0)); }
       else { const cap = mesh(Q.hairCap, hairM, -.015, .018, 0); cap.scale.set(1.03, 1.15, .96); cap.rotation.z = .2; head.add(cap);
         const back = mesh(Q.hairBack, hairM, -.07, -.03, 0); back.scale.set(.9, 1.1, 1); head.add(back); }
       if (cust.beard) { const b = mesh(Q.jaw, hairM, .07, -.11, 0); b.scale.set(.95, .85, 1.08); head.add(b); }
@@ -1572,7 +1577,7 @@ function texMat(name, draw, rx = 1, ry = 1, w, h, color){
   const key = name + rx + 'x' + ry + (color || '');
   if (LMTEX[key]) return LMTEX[key];
   const t = lmTex(name, draw, w, h).clone(); t.needsUpdate = true; t.repeat.set(rx, ry);
-  return (LMTEX[key] = new THREE.MeshLambertMaterial({ map: t, color: color || 0xffffff }));
+  return (LMTEX[key] = withOcclusion(new THREE.MeshLambertMaterial({ map: t, color: color || 0xffffff })));
 }
 const drawStone = g => { g.fillStyle = '#efe9de'; g.fillRect(0, 0, 256, 256); g.strokeStyle = 'rgba(120,105,90,.28)'; g.lineWidth = 2;
   for (let y = 0; y < 256; y += 32) { g.beginPath(); g.moveTo(0, y); g.lineTo(256, y); g.stroke(); for (let x = (y/32 % 2)*40; x < 256; x += 80) { g.beginPath(); g.moveTo(x, y); g.lineTo(x, y + 32); g.stroke(); } }
@@ -1974,12 +1979,14 @@ function buildLevel(idx){
     });
     const inst = (geo, mat, list, shadow) => { if (!list.length) return; const im = new THREE.InstancedMesh(geo, mat, list.length);
       list.forEach(([m, col], k) => { im.setMatrixAt(k, m); if (col) im.setColorAt(k, col); }); im.castShadow = !!shadow; im.receiveShadow = true; group.add(im); };
-    inst(G.box(.95, .26, .34), lam('#b0573a'), planters, true);
-    inst(G.box(1.0, .05, .38), lam('#c9805b'), rims);
-    inst(G.box(.05, .14, .3), lam('#3a3a3a'), brackets);
-    inst(FLOWER_GEO.leaf, new THREE.MeshLambertMaterial({ color: 0xffffff }), leaves, true);
-    inst(FLOWER_GEO.bloom, new THREE.MeshLambertMaterial({ color: 0xffffff }), flowers);
-    inst(FLOWER_GEO.trail, new THREE.MeshLambertMaterial({ color: 0xffffff }), trails);
+    // (these dissolve with their wall when it is cut away for the camera)
+    const occ = col => withOcclusion(new THREE.MeshLambertMaterial({ color: col }));
+    inst(G.box(.95, .26, .34), occ(0xb0573a), planters, true);
+    inst(G.box(1.0, .05, .38), occ(0xc9805b), rims);
+    inst(G.box(.05, .14, .3), occ(0x3a3a3a), brackets);
+    inst(FLOWER_GEO.leaf, occ(0xffffff), leaves, true);
+    inst(FLOWER_GEO.bloom, occ(0xffffff), flowers);
+    inst(FLOWER_GEO.trail, occ(0xffffff), trails);
   }
   if (balconies.length) {  // a stone slab with a little balustrade
     const slab = new THREE.InstancedMesh(G.box(2.1, .16, .7), M.stone, balconies.length), rail = new THREE.InstancedMesh(G.box(2.1, .55, .1), M.stone, balconies.length);
@@ -2017,7 +2024,7 @@ function buildLevel(idx){
     cor.castShadow = cor.receiveShadow = sc.receiveShadow = true; group.add(cor, sc); }
   if (doors.length) {
     const arch = (w, h) => { const s = new THREE.Shape(); s.moveTo(-w/2, -.3); s.lineTo(-w/2, h - w/2); s.absarc(0, h - w/2, w/2, Math.PI, 0, true); s.lineTo(w/2, -.3); s.closePath(); return new THREE.ShapeGeometry(s, 10); };
-    const frame = new THREE.InstancedMesh(arch(2.3, 3.2), M.stone, doors.length), door = new THREE.InstancedMesh(arch(1.8, 2.9), new THREE.MeshLambertMaterial({ color: 0x2c4a3c }), doors.length);
+    const frame = new THREE.InstancedMesh(arch(2.3, 3.2), M.stone, doors.length), door = new THREE.InstancedMesh(arch(1.8, 2.9), withOcclusion(new THREE.MeshLambertMaterial({ color: 0x2c4a3c })), doors.length);
     const o = new THREE.Object3D();
     doors.forEach(([x,z,ry,u], k) => { const ux = Math.cos(ry)*u, uz = -Math.sin(ry)*u;
       o.position.set(x + ux, 0, z + uz); o.rotation.set(0, ry, 0); o.updateMatrix(); frame.setMatrixAt(k, o.matrix);
@@ -2055,9 +2062,9 @@ function buildLevel(idx){
     lm.rotation.y = Math.atan2(-lmBlock.sx, -lmBlock.sz); }
   group.add(lm);
   // beacon
-  const beam = new THREE.Mesh(new THREE.CylinderGeometry(2.6, 2.6, 140, 24, 1, true), new THREE.MeshBasicMaterial({ map: beamTex, transparent:true, opacity:.55, depthWrite:false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide, fog:false }));
-  beam.position.set(target.x, 70, target.z); group.add(beam);
-  const ring = new THREE.Mesh(new THREE.RingGeometry(3.4, 4.3, 40), new THREE.MeshBasicMaterial({ color: 0xffd35a, transparent:true, opacity:.85, depthWrite:false }));
+  const beam = new THREE.Mesh(new THREE.CylinderGeometry(1.1, 1.5, 70, 20, 1, true), new THREE.MeshBasicMaterial({ map: beamTex, transparent:true, opacity:.22, depthWrite:false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide, fog:false }));
+  beam.position.set(target.x, 35, target.z); group.add(beam);
+  const ring = new THREE.Mesh(new THREE.PlaneGeometry(9, 9), new THREE.MeshBasicMaterial({ map: finishGlowTex, transparent:true, opacity:.7, depthWrite:false, blending: THREE.AdditiveBlending }));
   ring.rotation.x = -Math.PI/2; ring.position.set(target.x, .08, target.z); group.add(ring);
   const tlabel = labelSprite(L.dest, { fs: 56, tail: true, depthTest: false, scale: .042 }); tlabel.position.set(target.x, 30, target.z); group.add(tlabel);
 
@@ -3182,7 +3189,14 @@ function updateCamera(dt){
     const shift = window.innerWidth > 900 ? 3.4 : 0, vx = -fx, vz = -fz;
     tmpL.set(P.x + (-vz)*shift, 1.6, P.z + vx*shift); k = 2;
   } else if (state === 'won' || state === 'lost') {
-    resultA += dt*.25; tmpV.set(P.x + Math.cos(resultA)*16, 11, P.z + Math.sin(resultA)*16); tmpL.set(P.x, 2, P.z); k = 1.5;
+    // circle the boat, but only through open water: skip past any angle that would put the camera in a wall
+    resultA += dt*.25;
+    for (let tries = 0; tries < 16; tries++) {
+      const cx = P.x + Math.cos(resultA)*13, cz = P.z + Math.sin(resultA)*13;
+      let open = true; for (let i = 1; i <= 6 && open; i++) open = !blockedAt(P.x + (cx - P.x)*i/6, P.z + (cz - P.z)*i/6);
+      if (open) break; resultA += Math.PI/8;
+    }
+    tmpV.set(P.x + Math.cos(resultA)*13, 9, P.z + Math.sin(resultA)*13); tmpL.set(P.x, 2, P.z); k = 1.5;
   } else {
     camYaw += angDiff(camYaw, P.th) * Math.min(1, dt*2.6);
     const fx = Math.cos(camYaw), fz = -Math.sin(camYaw);
@@ -3269,12 +3283,13 @@ function renderReflection(){
   mirrorCam.position.set(camera.position.x, -camera.position.y, camera.position.z);
   mirrorCam.up.set(0, 1, 0); mirrorCam.lookAt(camLook.x, -camLook.y, camLook.z); mirrorCam.updateMatrixWorld();
   waterMat.uniforms.uReflMat.value.copy(BIAS).multiply(mirrorCam.projectionMatrix).multiply(mirrorCam.matrixWorldInverse);
+  const labelWas = world ? world.tlabel.visible : false;
   water.visible = shadowCatcher.visible = false; if (world) world.tlabel.visible = false;
   sky.position.copy(mirrorCam.position);
   const occWas = OCC.uOccOn.value; OCC.uOccOn.value = 0;   // reflections show the whole city
   renderer.clippingPlanes = reflClip; renderer.setRenderTarget(reflRT); renderer.render(scene, mirrorCam);
   renderer.setRenderTarget(null); renderer.clippingPlanes = []; OCC.uOccOn.value = occWas;
-  water.visible = shadowCatcher.visible = true; if (world) world.tlabel.visible = true;
+  water.visible = shadowCatcher.visible = true; if (world) world.tlabel.visible = labelWas;
   sky.position.copy(camera.position);
 }
 
@@ -3290,8 +3305,11 @@ function frame(now){
     if (live || state === 'won' || state === 'lost') updatePlayer(dt, live);
     updateObstacles(dt, live);
     updateWakes(dt);
-    world.ring.material.opacity = .6 + Math.sin(now/300)*.25;
-    world.ring.scale.setScalar(1 + Math.sin(now/400)*.05);
+    { const P = world.player, dT = Math.hypot(P.x - world.target.x, P.z - world.target.z), far = clamp((dT - 10)/40, 0, 1), done = state === 'won';
+      world.ring.material.opacity = (done ? 0 : .45 + Math.sin(now/500)*.15) * (.4 + .6*clamp(dT/20, 0, 1));
+      world.ring.scale.setScalar(1 + Math.sin(now/650)*.06);
+      world.beam.material.opacity = done ? 0 : .06 + .18*far;
+      world.tlabel.visible = !done && dT > 18; }
     if (live) {
       playT += dt; timeLeft -= dt;
       const P = world.player;
@@ -3333,6 +3351,12 @@ function resize(){ const w = window.innerWidth, h = window.innerHeight; renderer
 window.addEventListener('resize', resize);
 
 /* ================= BOOT ================= */
+// for testing in the browser console: __mme.world(), __mme.goNearTarget()
+window.__mme = { world: () => world, step(n = 20){ for (let i = 0; i < n; i++) { last = performance.now() - 40; frame(performance.now()); } return state; },
+  async shot(name = 'shot'){ this.step(1); const url = canvas.toDataURL('image/jpeg', .85); await fetch('/__shot?name=' + name, { method: 'POST', body: url }); return name; },
+  goNearTarget(d = 14){ const w = world, P = w.player; const a = Math.atan2(P.z - w.target.z, P.x - w.target.x);
+  for (const r of [d, d*.7, d*1.3, d*.5]) for (let k = 0; k < 16; k++) { const aa = a + k*Math.PI/8, x = w.target.x + Math.cos(aa)*r, z = w.target.z + Math.sin(aa)*r;
+    if (!hullBlocked(x, z, Math.atan2(-(w.target.z - z), w.target.x - x))) { P.x = x; P.z = z; P.th = Math.atan2(-(w.target.z - z), w.target.x - x); P.v = 0; return true; } } return false; } };
 function start(data){
   progress = Object.assign({ unlocked: 0, best: {}, owned: [], equipped: {}, gondolier: null }, store.get('mme-progress', {}), (data && data.progress) || {});
   // players from before the shop existed start with the tips they already earned

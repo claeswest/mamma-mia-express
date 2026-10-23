@@ -4,6 +4,15 @@ const port = Number(process.argv[2] || process.env.PORT || 5199), root = __dirna
 const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp', '.mp4': 'video/mp4', '.json': 'application/json', '.md': 'text/plain; charset=utf-8' };
 http.createServer((req, res) => {
   const url = decodeURIComponent(req.url.split('?')[0]);
+  // testing aid: POST a data-URL screenshot to /__shot?name=x and it lands in shots/x.jpg
+  if (req.method === 'POST' && url === '/__shot') {
+    const name = (new URL(req.url, 'http://x').searchParams.get('name') || 'shot').replace(/[^\w-]/g, '');
+    let body = ''; req.on('data', c => body += c); req.on('end', () => {
+      fs.mkdirSync(path.join(root, 'shots'), { recursive: true });
+      fs.writeFileSync(path.join(root, 'shots', name + '.jpg'), Buffer.from(body.replace(/^data:image\/\w+;base64,/, ''), 'base64'));
+      res.writeHead(200); res.end('ok'); });
+    return;
+  }
   const file = path.join(root, url === '/' ? 'index.html' : url);
   if (!file.startsWith(root)) { res.writeHead(403); return res.end(); }
   fs.readFile(file, (err, data) => {
