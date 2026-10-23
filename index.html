@@ -844,12 +844,12 @@ const waterMat = new THREE.ShaderMaterial({
     float h(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7)))*43758.5453); }
     float n(vec2 p){ vec2 i = floor(p), f = fract(p); f = f*f*(3.0-2.0*f); return mix(mix(h(i),h(i+vec2(1,0)),f.x), mix(h(i+vec2(0,1)),h(i+vec2(1,1)),f.x), f.y); }
     void main(){
-      vec2 p = vW.xz*0.13;
+      vec2 p = vW.xz*0.24;
       float a = n(p + vec2(uTime*0.18, uTime*0.11));
       float b = n(p*2.4 - vec2(uTime*0.23, -uTime*0.15));
       float c = n(vW.xz*0.9 + vec2(-uTime*0.6, uTime*0.4));
-      float w = a*0.6 + b*0.4;
-      vec3 col = mix(uDeep, uShallow, smoothstep(0.3, 0.85, w));
+      float w = a*0.5 + b*0.3 + c*0.2;
+      vec3 col = mix(uDeep, uShallow, 0.35 + 0.3*w);
       vec3 v = normalize(uCam - vW);
       // reflection, wobbled by the ripples, stronger at grazing angles (Fresnel)
       vec4 rc = uReflMat * vec4(vW.x, 0.0, vW.z, 1.0);
@@ -975,6 +975,34 @@ const FACADES = FACADE_STYLES.map(st => {
   });
   return { map, lit, balcony: !!st.balcony };
 });
+// See-through occluders: anything between the camera and the gondola dissolves (a dithered cut-away),
+// so the camera can stay low behind the boat looking down the canal instead of climbing over the roofs.
+const OCC = { uOccA: { value: new THREE.Vector3() }, uOccB: { value: new THREE.Vector3() }, uOccR: { value: 4.2 }, uOccOn: { value: 0 } };
+function occlusionCut(sh){
+  Object.assign(sh.uniforms, OCC);
+  sh.vertexShader = 'varying vec3 vOccW;\n' + sh.vertexShader.replace('#include <project_vertex>', `#include <project_vertex>
+    vec4 occw = vec4(transformed, 1.0);
+    #ifdef USE_INSTANCING
+      occw = instanceMatrix * occw;
+    #endif
+    vOccW = (modelMatrix * occw).xyz;`);
+  sh.fragmentShader = 'varying vec3 vOccW; uniform vec3 uOccA, uOccB; uniform float uOccR, uOccOn;\n' + sh.fragmentShader.replace('void main() {', `void main() {
+    if (uOccOn > 0.5) {
+      vec3 ab = uOccB - uOccA; float t = clamp(dot(vOccW - uOccA, ab) / dot(ab, ab), 0.0, 1.0);
+      float d = length(vOccW - (uOccA + ab*t));
+      if (t > 0.02 && t < 0.9 && d < uOccR) {
+        float k = smoothstep(uOccR, uOccR*0.5, d);
+        float dith = fract(sin(dot(floor(gl_FragCoord.xy), vec2(12.9898, 78.233))) * 43758.5453);
+        if (dith < k*0.92) discard;
+      }
+    }`);
+}
+function withOcclusion(mat){
+  const prev = mat.onBeforeCompile, key = mat.customProgramCacheKey ? mat.customProgramCacheKey() : '';
+  mat.onBeforeCompile = (sh, r) => { if (prev && prev !== THREE.Material.prototype.onBeforeCompile) prev(sh, r); occlusionCut(sh); };
+  mat.customProgramCacheKey = () => key + '|occ';
+  return mat;
+}
 // House walls: one unit box per house, scaled per instance. The shader lays the façade texture out in
 // world space (one window bay per 5 m, two storeys per tile) so every width and height gets properly sized
 // windows, and it adds soft ambient occlusion: darker low down in the canal, at the corners and under the eaves.
@@ -999,15 +1027,15 @@ function facadeMaterial(fac, glow){
       #endif`)
       .replace('#include <fog_fragment>', `{
         float along = vAxisX > 0.5 ? vLoc.z : vLoc.x;
-        float aoCanal = mix(0.5, 1.0, smoothstep(-0.5, 12.0, vCanalY));
-        float aoCorner = mix(0.8, 1.0, smoothstep(0.0, 0.07, 0.5 - abs(along)));
-        float aoEave = mix(0.7, 1.0, smoothstep(1.0, 0.9, vLoc.y));
+        float aoCanal = mix(0.7, 1.0, smoothstep(-0.5, 10.0, vCanalY));
+        float aoCorner = mix(0.9, 1.0, smoothstep(0.0, 0.06, 0.5 - abs(along)));
+        float aoEave = mix(0.84, 1.0, smoothstep(1.0, 0.93, vLoc.y));
         gl_FragColor.rgb *= aoCanal * aoCorner * aoEave;
       }
       #include <fog_fragment>`);
   };
   mat.customProgramCacheKey = () => 'facade-ws';
-  return mat;
+  return withOcclusion(mat);
 }
 // Deep canals: walls get darker towards the water, the way light fades down into a narrow Venetian rio.
 function canalShade(mat, low){
@@ -1031,12 +1059,16 @@ const plinthTex = canvasTex(64, 64, (g) => {
   const gr = g.createLinearGradient(0, 22, 0, 36); gr.addColorStop(0, 'rgba(70,110,70,0)'); gr.addColorStop(1, '#3f5e3f'); g.fillStyle = gr; g.fillRect(0, 22, 64, 14);
   g.fillStyle = '#2f4a33'; g.fillRect(0, 36, 64, 28);
 });
-const roofTex = canvasTex(64, 64, (g) => {
-  g.fillStyle = '#fff'; g.fillRect(0, 0, 64, 64);
-  g.fillStyle = 'rgba(0,0,0,.16)'; for (let y = 0; y < 64; y += 8) g.fillRect(0, y, 64, 2);
-  for (let y = 0; y < 64; y += 8) for (let x = (y/8)%2*4; x < 64; x += 8) g.fillRect(x, y, 1.5, 8);
+const roofTex = canvasTex(128, 128, (g) => {
+  g.fillStyle = '#fff'; g.fillRect(0, 0, 128, 128);
+  for (let x = 0; x < 128; x += 8) for (let y = 0; y < 128; y += 10) { const l = 82 + Math.random()*18;
+    const gr = g.createLinearGradient(x, 0, x + 8, 0); gr.addColorStop(0, `hsl(20,10%,${l - 14}%)`); gr.addColorStop(.5, `hsl(20,8%,${l}%)`); gr.addColorStop(1, `hsl(20,10%,${l - 18}%)`);
+    g.fillStyle = gr; g.fillRect(x, y + (x/8 % 2)*5, 8, 10); }
+  g.fillStyle = 'rgba(40,30,25,.22)'; for (let y = 0; y < 128; y += 10) g.fillRect(0, y, 128, 1.5);
+  for (let i = 0; i < 18; i++) { g.fillStyle = `rgba(${60 + Math.random()*40},${80 + Math.random()*40},50,${.12 + Math.random()*.12})`; g.beginPath(); g.arc(Math.random()*128, Math.random()*128, 3 + Math.random()*9, 0, 7); g.fill(); }
+  for (let i = 0; i < 10; i++) { g.fillStyle = 'rgba(30,25,22,.12)'; g.beginPath(); g.arc(Math.random()*128, Math.random()*128, 4 + Math.random()*10, 0, 7); g.fill(); }
 });
-roofTex.repeat.set(3, 3);
+roofTex.repeat.set(2, 2);
 const stripeTex = canvasTex(32, 32, (g) => { g.fillStyle = '#fff'; g.fillRect(0,0,32,32); g.fillStyle = '#1d2b4f'; for (let y = 0; y < 32; y += 8) g.fillRect(0, y, 32, 4); });
 stripeTex.repeat.set(1, 2);
 function poleTex(col){ const t = canvasTex(64, 64, (g) => { g.fillStyle = '#fff'; g.fillRect(0,0,64,64); g.fillStyle = col; for (let k = -64; k < 128; k += 32) { g.beginPath(); g.moveTo(k,0); g.lineTo(k+16,0); g.lineTo(k+16+64,64); g.lineTo(k+64,64); g.fill(); } }); t.repeat.set(1, 3); return t; }
@@ -1091,8 +1123,10 @@ const M = {
   verdigris: new THREE.MeshLambertMaterial({ color: 0x6f9f86 }),
   poles: [poleTex('#2d5fb0'), poleTex('#c8202f'), poleTex('#2f8a5a')].map(t => new THREE.MeshLambertMaterial({ map: t }))
 };
+// roofs, cornices, stone and rooftop terraces dissolve too when they block the view of the boat
+[M.roof, M.stone, M.plinth, M.chim, M.wood].forEach(withOcclusion);
 const PALETTE = ['#e8a87c','#d9735b','#f2c57c','#ead7b6','#c9594a','#f0b8a0','#d98e5f','#e6c79c','#b85c4c','#f4d8a6','#e3a3a8','#c7b08a','#f1c9b0','#d6a15e'];
-const ROOFS = ['#b5543c','#c4623f','#a94a36','#cf7a4f','#b86a4a','#c25a3a'];
+const ROOFS = ['#b8735a','#a96650','#c28462','#9e6250','#b47a5e','#a36a58','#c08f6c','#94604e','#b98068','#a8705c'];
 
 /* ================= BUILDERS ================= */
 const G = {
@@ -1998,9 +2032,9 @@ function buildLevel(idx){
     deck.castShadow = rail.castShadow = post.castShadow = true; group.add(deck, rail, post);
   }
   if (chims.length) {
-    const st = new THREE.InstancedMesh(G.cyl(.32, .36, 2, 8), M.chim, chims.length);
-    const fu = new THREE.InstancedMesh(G.cyl(.85, .3, 1.1, 10), new THREE.MeshLambertMaterial({ color: 0xc4623f }), chims.length);
-    chims.forEach(([x,y,z], k) => { mtx.makeTranslation(x, y+.8, z); st.setMatrixAt(k, mtx); mtx.makeTranslation(x, y+2.3, z); fu.setMatrixAt(k, mtx); });
+    const st = new THREE.InstancedMesh(G.cyl(.22, .26, 1.6, 8), M.chim, chims.length);
+    const fu = new THREE.InstancedMesh(G.cyl(.5, .22, .75, 10), new THREE.MeshLambertMaterial({ color: 0xd9c9b4 }), chims.length);
+    chims.forEach(([x,y,z], k) => { mtx.makeTranslation(x, y+.5, z); st.setMatrixAt(k, mtx); mtx.makeTranslation(x, y+1.85, z); fu.setMatrixAt(k, mtx); });
     st.castShadow = fu.castShadow = true; group.add(st, fu);
   }
 
@@ -3088,9 +3122,11 @@ function updateHUD(){
 const camLook = new THREE.Vector3(), tmpV = new THREE.Vector3(), tmpL = new THREE.Vector3();
 // chase positions [distance behind, height], tried in order until nothing blocks the view of the boat
 const CAM_PRESETS = {
-  near: [[13,19],[10.5,23],[8,27],[5.5,31],[3,35],[.5,40]],
-  far:  [[20,30],[16,34],[12,38],[8,42],[4,46],[.5,50]]
+  near: [[13,14],[10.5,23],[8,27],[5.5,31],[3,35],[.5,40]],
+  far:  [[20,24],[16,34],[12,38],[8,42],[4,46],[.5,50]]
 };
+// with the see-through cut-away the camera no longer has to climb over houses
+const CUTAWAY = true;
 let camMode = store.get('mme-cam', 'near'), camBack = 13, camUp = 19;
 function heightAt(x, z){ const w = world, gx = Math.floor(x/CELL), gz = Math.floor(z/CELL); if (gx < 0 || gz < 0 || gx >= w.GW || gz >= w.GH) return 0; return w.heights[gz*w.GW + gx]; }
 function viewClear(P, fx, fz, back, up){
@@ -3102,6 +3138,7 @@ function viewClear(P, fx, fz, back, up){
   return true;
 }
 function chaseTarget(P, fx, fz){
+  if (CUTAWAY) return CAM_PRESETS[camMode][0];
   for (const [b,u] of CAM_PRESETS[camMode]) if (viewClear(P, fx, fz, b, u)) return [b,u];
   const l = CAM_PRESETS[camMode]; return l[l.length-1];
 }
@@ -3159,7 +3196,7 @@ function updateCamera(dt){
   const a = 1 - Math.exp(-dt*k);
   camera.position.lerp(tmpV, a); camLook.lerp(tmpL, a);
   // never let the camera sink into a roof while it glides in
-  if (state === 'play' || state === 'countdown') { const floor = heightAt(camera.position.x, camera.position.z) + 3; if (camera.position.y < floor) camera.position.y = floor; }
+  if (!CUTAWAY && (state === 'play' || state === 'countdown')) { const floor = heightAt(camera.position.x, camera.position.z) + 3; if (camera.position.y < floor) camera.position.y = floor; }
   if (shake > 0) { shake -= dt; camera.position.x += (Math.random()-.5)*shake; camera.position.y += (Math.random()-.5)*shake; }
   camera.lookAt(camLook);
   sky.position.copy(camera.position);
@@ -3167,6 +3204,10 @@ function updateCamera(dt){
   const focus = (state === 'title' || state === 'intro') ? w.center : tmpV.set(P.x, 0, P.z);
   sunL.target.position.set(focus.x, 0, focus.z); sunL.position.copy(sunL.target.position).add(SUN_OFF);
   shadowCatcher.position.set(focus.x, .03, focus.z);
+  // aim the see-through cut-away along the line from the camera to the gondola
+  const cut = CUTAWAY && (state === 'play' || state === 'countdown' || state === 'won' || state === 'lost') && !(cineT > 0);
+  OCC.uOccOn.value = cut ? 1 : 0;
+  if (cut) { OCC.uOccA.value.copy(camera.position); OCC.uOccB.value.set(P.x, 1.6, P.z); }
 }
 
 /* ================= POST-PROCESSING: glow + film grade ================= */
@@ -3187,10 +3228,10 @@ const GradeShader = {
 // per ride: [contrast, saturation, gain rgb, lift rgb, bloom strength, bloom threshold]
 // (daytime thresholds sit high so only sun glints glow, not every white wall)
 const GRADES = [
-  [.28, 1.08, [1.03, 1.0, .96], [0, .01, .03], .3, .95],    // sunny afternoon
-  [.18, .98, [1.0, 1.0, 1.0], [.03, .035, .045], .25, .96],  // misty morning
-  [.32, 1.12, [1.06, 1.0, .9], [.01, 0, .04], .42, .9],     // golden hour
-  [.3, 1.12, [1.06, .98, .94], [.02, 0, .05], .55, .86],   // sunset
+  [.18, .97, [1.02, 1.0, .97], [.01, .015, .03], .3, .95],  // sunny afternoon
+  [.14, .94, [1.0, 1.0, 1.0], [.03, .035, .045], .25, .96], // misty morning
+  [.22, 1.0, [1.05, 1.0, .92], [.015, .005, .04], .42, .9], // golden hour
+  [.22, 1.02, [1.05, .98, .95], [.02, .005, .05], .55, .86],// sunset
   [.3, 1.05, [.98, .99, 1.05], [0, .01, .05], .85, .7],    // blue hour
   [.32, 1.15, [1.02, .97, 1.05], [.02, 0, .06], .95, .66], // Carnevale night
   [.22, .9, [.98, 1.0, 1.02], [.01, .02, .04], .3, .9],    // rain
@@ -3230,8 +3271,9 @@ function renderReflection(){
   waterMat.uniforms.uReflMat.value.copy(BIAS).multiply(mirrorCam.projectionMatrix).multiply(mirrorCam.matrixWorldInverse);
   water.visible = shadowCatcher.visible = false; if (world) world.tlabel.visible = false;
   sky.position.copy(mirrorCam.position);
+  const occWas = OCC.uOccOn.value; OCC.uOccOn.value = 0;   // reflections show the whole city
   renderer.clippingPlanes = reflClip; renderer.setRenderTarget(reflRT); renderer.render(scene, mirrorCam);
-  renderer.setRenderTarget(null); renderer.clippingPlanes = [];
+  renderer.setRenderTarget(null); renderer.clippingPlanes = []; OCC.uOccOn.value = occWas;
   water.visible = shadowCatcher.visible = true; if (world) world.tlabel.visible = true;
   sky.position.copy(camera.position);
 }
